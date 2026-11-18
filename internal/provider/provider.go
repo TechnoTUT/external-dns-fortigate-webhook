@@ -1,8 +1,9 @@
-// Package provider は ExternalDNS の変更を FortiGate の dns-database に反映する。
+// Package provider applies ExternalDNS changes to a FortiGate dns-database.
 //
-// 正引きのゾーンと逆引きのゾーンは、どちらも webhook 専用であることを前提にする。
-// FortiGate の dns-entry には TXT が置けず、ExternalDNS の所有者の記録 (TXT registry) が使えないため。
-// ゾーンの A、AAAA、CNAME (逆引きのゾーンでは PTR) は、すべて webhook のものとして扱う。
+// Both the forward zone and the reverse zones must be dedicated to the webhook.
+// A FortiGate dns-entry cannot hold TXT records, so the ExternalDNS TXT registry
+// (which records record ownership) cannot be used. Every A, AAAA and CNAME entry in the
+// forward zone, and every PTR entry in a reverse zone, is treated as owned by the webhook.
 package provider
 
 import (
@@ -16,17 +17,17 @@ import (
 	"github.com/TechnoTUT/external-dns-fortigate-webhook/internal/fortigate"
 )
 
-// ZoneAPI は FortiGate のゾーンの読み書き。テストで差し替える。
+// ZoneAPI reads and writes FortiGate zones. Tests replace it with a fake.
 type ZoneAPI interface {
 	GetZone(ctx context.Context, name string) (*fortigate.Zone, error)
 	PutEntries(ctx context.Context, name string, entries []fortigate.Entry) error
 }
 
-// Config は Provider の設定。
+// Config configures a Provider.
 type Config struct {
-	ForwardZone  string   // 正引きのゾーン (dns-database の名前)
-	ReverseZones []string // 逆引きのゾーン (dns-database の名前)。空なら PTR を作らない
-	DryRun       bool     // true なら FortiGate に書かず、書く内容をログに出す
+	ForwardZone  string   // name of the forward zone in dns-database
+	ReverseZones []string // names of the reverse zones in dns-database; no PTR records when empty
+	DryRun       bool     // log the entries instead of writing them to the FortiGate
 }
 
 type reverseZone struct {
@@ -34,7 +35,7 @@ type reverseZone struct {
 	prefix netip.Prefix
 }
 
-// Provider は ExternalDNS の provider。
+// Provider is the ExternalDNS provider.
 type Provider struct {
 	api     ZoneAPI
 	cfg     Config
@@ -44,45 +45,45 @@ type Provider struct {
 	reverse []reverseZone
 }
 
-// New は Provider を作る。Init を呼ぶまで使えない。
+// New creates a Provider. It cannot be used until Init succeeds.
 func New(api ZoneAPI, cfg Config, log *slog.Logger) *Provider {
 	return &Provider{api: api, cfg: cfg, log: log}
 }
 
-// Init は FortiGate からゾーンのドメインを読み、設定を確かめる。
+// Init reads the zone domains from the FortiGate and validates the configuration.
 func (p *Provider) Init(ctx context.Context) error {
 	z, err := p.api.GetZone(ctx, p.cfg.ForwardZone)
 	if err != nil {
-		return fmt.Errorf("正引きのゾーン %s: %w", p.cfg.ForwardZone, err)
+		return fmt.Errorf("forward zone %s: %w", p.cfg.ForwardZone, err)
 	}
 	domain := normName(z.Domain)
 	var rev []reverseZone
 	for _, name := range p.cfg.ReverseZones {
 		rz, err := p.api.GetZone(ctx, name)
 		if err != nil {
-			return fmt.Errorf("逆引きのゾーン %s: %w", name, err)
+			return fmt.Errorf("reverse zone %s: %w", name, err)
 		}
 		prefix, err := reversePrefix(rz.Domain)
 		if err != nil {
-			return fmt.Errorf("逆引きのゾーン %s: %w", name, err)
+			return fmt.Errorf("reverse zone %s: %w", name, err)
 		}
 		rev = append(rev, reverseZone{name: name, prefix: prefix})
 	}
 	p.mu.Lock()
 	p.domain, p.reverse = domain, rev
 	p.mu.Unlock()
-	p.log.Info("ゾーンを読んだ", "forward", p.cfg.ForwardZone, "domain", domain, "reverse", len(rev), "dryRun", p.cfg.DryRun)
+	p.log.Info("zones loaded", "forward", p.cfg.ForwardZone, "domain", domain, "reverse", len(rev), "dryRun", p.cfg.DryRun)
 	return nil
 }
 
-// Domain は正引きのゾーンのドメイン。
+// Domain returns the domain of the forward zone.
 func (p *Provider) Domain() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.domain
 }
 
-// Records は正引きのゾーンにある、webhook が扱うレコードを返す。
+// Records returns the records in the forward zone that the webhook manages.
 func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 	domain := p.Domain()
 	z, err := p.api.GetZone(ctx, p.cfg.ForwardZone)
@@ -93,22 +94,23 @@ func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 	return set.endpoints(), nil
 }
 
-// AdjustEndpoints は、扱えない endpoint を除き、名前と値を FortiGate から読み返したときと同じ形にそろえる。
-// そろえないと、ExternalDNS が毎回差分があると判断して更新を繰り返す。
+// AdjustEndpoints drops endpoints the webhook cannot handle and normalizes names and
+// targets to the form Records returns. Without this, ExternalDNS would see a difference
+// on every sync and keep updating the same records.
 func (p *Provider) AdjustEndpoints(eps []*endpoint.Endpoint) []*endpoint.Endpoint {
 	domain := p.Domain()
 	out := make([]*endpoint.Endpoint, 0, len(eps))
 	for _, ep := range eps {
 		k, err := validate(domain, ep)
 		if err != nil {
-			p.log.Warn("endpoint を除く", "reason", err.Error())
+			p.log.Warn("dropping endpoint", "reason", err.Error())
 			continue
 		}
 		targets := make(map[string]struct{}, len(ep.Targets))
 		for _, t := range ep.Targets {
 			n, ok := normTarget(k.typ, t)
 			if !ok {
-				p.log.Warn("不正な値を除く", "name", k.name, "type", k.typ, "target", t)
+				p.log.Warn("dropping invalid target", "name", k.name, "type", k.typ, "target", t)
 				continue
 			}
 			targets[n] = struct{}{}
@@ -117,7 +119,7 @@ func (p *Provider) AdjustEndpoints(eps []*endpoint.Endpoint) []*endpoint.Endpoin
 			continue
 		}
 		if k.typ == "CNAME" && len(targets) > 1 {
-			p.log.Warn("CNAME の値が複数あるので除く", "name", k.name)
+			p.log.Warn("dropping CNAME with multiple targets", "name", k.name)
 			continue
 		}
 		adj := *ep
@@ -130,7 +132,7 @@ func (p *Provider) AdjustEndpoints(eps []*endpoint.Endpoint) []*endpoint.Endpoin
 	return out
 }
 
-// ApplyChanges は変更を正引きのゾーンに当て、逆引きのゾーンを作り直す。
+// ApplyChanges applies the changes to the forward zone and rebuilds the reverse zones.
 func (p *Provider) ApplyChanges(ctx context.Context, ch *endpoint.Changes) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -141,12 +143,12 @@ func (p *Provider) ApplyChanges(ctx context.Context, ch *endpoint.Changes) error
 	}
 	set, preserved := fromEntries(p.domain, z.Entries)
 
-	// Delete、UpdateOld を先に当ててから Create、UpdateNew を当てる。
+	// Apply Delete and UpdateOld first, then Create and UpdateNew.
 	for _, ep := range ch.Delete {
 		if k, err := validate(p.domain, ep); err == nil {
 			set.remove(k, ep.Targets)
 		} else {
-			p.log.Warn("削除を飛ばす", "reason", err.Error())
+			p.log.Warn("skipping delete", "reason", err.Error())
 		}
 	}
 	for _, ep := range ch.UpdateOld {
@@ -158,7 +160,7 @@ func (p *Provider) ApplyChanges(ctx context.Context, ch *endpoint.Changes) error
 		for _, ep := range eps {
 			k, err := validate(p.domain, ep)
 			if err != nil {
-				p.log.Warn("追加を飛ばす", "reason", err.Error())
+				p.log.Warn("skipping create", "reason", err.Error())
 				continue
 			}
 			if err := set.add(k, ep.Targets, ep.RecordTTL); err != nil {
@@ -174,8 +176,8 @@ func (p *Provider) ApplyChanges(ctx context.Context, ch *endpoint.Changes) error
 	return p.syncReverse(ctx, set)
 }
 
-// SyncReverse は正引きのゾーンを読み、逆引きのゾーンを作り直す。
-// ApplyChanges のあとに逆引きの書き込みだけ失敗した場合に、定期的に呼んで直す。
+// SyncReverse reads the forward zone and rebuilds the reverse zones. It is called
+// periodically to repair the reverse zones when only their write failed in ApplyChanges.
 func (p *Provider) SyncReverse(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -198,30 +200,29 @@ func (p *Provider) syncReverse(ctx context.Context, fwd recordSet) error {
 			errs = append(errs, err)
 			continue
 		}
-		_, preserved := splitReverse(z.Entries)
-		desired := reverseEntries(fwd, rz.prefix, preserved)
+		desired := reverseEntries(fwd, rz.prefix, preservedReverse(z.Entries))
 		if err := p.write(ctx, rz.name, z.Entries, desired); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("逆引きのゾーンを更新できない: %v", errs)
+		return fmt.Errorf("cannot update reverse zones: %v", errs)
 	}
 	return nil
 }
 
 func (p *Provider) write(ctx context.Context, zone string, current, desired []fortigate.Entry) error {
 	if sameEntries(current, desired) {
-		p.log.Debug("変更なし", "zone", zone)
+		p.log.Debug("no changes", "zone", zone)
 		return nil
 	}
 	if p.cfg.DryRun {
-		p.log.Info("dry-run: 書き込まない", "zone", zone, "current", len(current), "desired", len(desired), "entries", desired)
+		p.log.Info("dry run: not writing", "zone", zone, "current", len(current), "desired", len(desired), "entries", desired)
 		return nil
 	}
 	if err := p.api.PutEntries(ctx, zone, desired); err != nil {
 		return err
 	}
-	p.log.Info("ゾーンを更新した", "zone", zone, "before", len(current), "after", len(desired))
+	p.log.Info("zone updated", "zone", zone, "before", len(current), "after", len(desired))
 	return nil
 }

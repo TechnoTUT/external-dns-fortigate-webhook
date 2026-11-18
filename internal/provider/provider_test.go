@@ -91,32 +91,32 @@ func TestApplyChanges(t *testing.T) {
 	if !reflect.DeepEqual(eps, want) {
 		t.Fatalf("got %+v", eps)
 	}
-	// NS (preserved) は ID を保ったまま残り、webhook のエントリはその後ろに振られる。
+	// NS (preserved) keeps its ID, and the webhook entries get the following IDs.
 	fwd := f.zones["svc.technotut.net"].Entries
 	if fwd[0].Type != "NS" || fwd[0].ID != 1 || fwd[1].ID != 2 || fwd[1].Hostname != "cam1" {
 		t.Fatalf("forward entries: %+v", fwd)
 	}
-	// 逆引き: 10.12.0.0/16 に入る cam1 だけが PTR になり、古い PTR は消え、NS は残る。
+	// Reverse: only cam1 (in 10.12.0.0/16) becomes a PTR, the stale PTR is removed and NS is kept.
 	rev := f.zones["rev10.12"].Entries
 	if len(rev) != 2 || rev[0].Type != "NS" || rev[1].Type != "PTR" || rev[1].IP != "10.12.0.5" || rev[1].Hostname != "cam1.svc.technotut.net" {
 		t.Fatalf("reverse entries: %+v", rev)
 	}
 
-	// 同じ変更をもう一度当てても書き込まない。
+	// Applying the same change again must not write.
 	puts := f.puts["svc.technotut.net"]
 	if err := p.ApplyChanges(ctx, &endpoint.Changes{Create: []*endpoint.Endpoint{{DNSName: "cam1.svc.technotut.net", RecordType: "A", Targets: []string{"10.12.0.5"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts["svc.technotut.net"] != puts {
-		t.Fatal("変更がないのに書き込んだ")
+		t.Fatal("wrote although nothing changed")
 	}
 
-	// 削除
+	// Delete
 	if err := p.ApplyChanges(ctx, &endpoint.Changes{Delete: []*endpoint.Endpoint{{DNSName: "cam1.svc.technotut.net", RecordType: "A", Targets: []string{"10.12.0.5"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	if rev := f.zones["rev10.12"].Entries; len(rev) != 1 {
-		t.Fatalf("PTR が残っている: %+v", rev)
+		t.Fatalf("PTR still present: %+v", rev)
 	}
 }
 
@@ -130,7 +130,7 @@ func TestDryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(f.puts) != 0 {
-		t.Fatal("dry-run なのに書き込んだ")
+		t.Fatal("wrote in dry-run mode")
 	}
 }
 
@@ -171,7 +171,7 @@ func TestReversePrefix(t *testing.T) {
 	}
 	for _, bad := range []string{"svc.technotut.net", "0-25.12.10.in-addr.arpa", "256.in-addr.arpa", "1.2.3.4.in-addr.arpa", "01.in-addr.arpa"} {
 		if _, err := reversePrefix(bad); err == nil {
-			t.Errorf("%s: エラーにならない", bad)
+			t.Errorf("%s: expected an error", bad)
 		}
 	}
 }

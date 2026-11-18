@@ -10,11 +10,11 @@ import (
 	"github.com/TechnoTUT/external-dns-fortigate-webhook/internal/fortigate"
 )
 
-// 正引きのゾーンで webhook が扱うレコードの種類。
+// Record types the webhook manages in the forward zone.
 var managedTypes = map[string]bool{"A": true, "AAAA": true, "CNAME": true}
 
 type key struct {
-	name string // FQDN。小文字で末尾のドットなし
+	name string // FQDN, lower case, without the trailing dot
 	typ  string
 }
 
@@ -23,19 +23,20 @@ type record struct {
 	ttl     int64
 }
 
-// recordSet は正引きのゾーンの、webhook が扱うレコードの集合。
+// recordSet holds the records of the forward zone that the webhook manages.
 type recordSet map[key]*record
 
 func normName(s string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), ".")
 }
 
-// inZone は name が domain のサブドメイン (domain そのものは除く) かどうか。
+// inZone reports whether name is a subdomain of domain (the domain itself excluded).
 func inZone(name, domain string) bool {
 	return strings.HasSuffix(name, "."+domain) && len(name) > len(domain)+1
 }
 
-// normTarget はレコードの値を、FortiGate に書く形にそろえる。不正なら ok=false。
+// normTarget normalizes a record value to the form written to the FortiGate.
+// ok is false when the value is invalid.
 func normTarget(typ, t string) (string, bool) {
 	switch typ {
 	case "A":
@@ -57,8 +58,9 @@ func normTarget(typ, t string) (string, bool) {
 	return "", false
 }
 
-// fromEntries は FortiGate のエントリを recordSet に変換する。
-// 扱わないエントリ (NS や MX、無効にしたもの、ゾーンの頂点) は preserved に入れ、そのまま残す。
+// fromEntries converts FortiGate entries into a recordSet.
+// Entries the webhook does not manage (NS, MX, disabled entries, the zone apex) are
+// returned in preserved and kept as they are.
 func fromEntries(domain string, entries []fortigate.Entry) (recordSet, []fortigate.Entry) {
 	set := recordSet{}
 	var preserved []fortigate.Entry
@@ -100,7 +102,7 @@ func fromEntries(domain string, entries []fortigate.Entry) (recordSet, []fortiga
 	return set, preserved
 }
 
-// endpoints は recordSet を ExternalDNS の Endpoint にする。
+// endpoints converts the recordSet into ExternalDNS endpoints.
 func (s recordSet) endpoints() []*endpoint.Endpoint {
 	keys := s.sortedKeys()
 	out := make([]*endpoint.Endpoint, 0, len(keys))
@@ -139,20 +141,20 @@ func sortedTargets(m map[string]struct{}) []string {
 	return out
 }
 
-// validate は Endpoint を webhook が扱えるかどうか確かめ、名前の正規化をした key を返す。
+// validate checks that the webhook can handle the endpoint and returns its normalized key.
 func validate(domain string, ep *endpoint.Endpoint) (key, error) {
 	if ep == nil {
-		return key{}, fmt.Errorf("空の endpoint")
+		return key{}, fmt.Errorf("nil endpoint")
 	}
 	k := key{normName(ep.DNSName), strings.ToUpper(ep.RecordType)}
 	if !managedTypes[k.typ] {
-		return k, fmt.Errorf("%s %s: 扱わない種類", k.name, k.typ)
+		return k, fmt.Errorf("%s %s: unsupported record type", k.name, k.typ)
 	}
 	if !inZone(k.name, domain) {
-		return k, fmt.Errorf("%s %s: ゾーン %s の外か、ゾーンの頂点", k.name, k.typ, domain)
+		return k, fmt.Errorf("%s %s: outside zone %s or at the zone apex", k.name, k.typ, domain)
 	}
 	if ep.SetIdentifier != "" {
-		return k, fmt.Errorf("%s %s: setIdentifier は扱えない", k.name, k.typ)
+		return k, fmt.Errorf("%s %s: setIdentifier is not supported", k.name, k.typ)
 	}
 	return k, nil
 }
@@ -182,7 +184,7 @@ func (s recordSet) add(k key, targets []string, ttl int64) error {
 	for _, t := range targets {
 		n, ok := normTarget(k.typ, t)
 		if !ok {
-			return fmt.Errorf("%s %s: 不正な値 %q", k.name, k.typ, t)
+			return fmt.Errorf("%s %s: invalid target %q", k.name, k.typ, t)
 		}
 		r.targets[n] = struct{}{}
 	}
@@ -192,8 +194,8 @@ func (s recordSet) add(k key, targets []string, ttl int64) error {
 	return nil
 }
 
-// toEntries は recordSet を FortiGate のエントリにする。preserved はそのままの ID で先頭に置き、
-// webhook のエントリにはその後ろの ID を順に振る。
+// toEntries converts the recordSet into FortiGate entries. Preserved entries come first
+// with their IDs unchanged, and the webhook's entries get the following IDs in order.
 func (s recordSet) toEntries(domain string, preserved []fortigate.Entry) []fortigate.Entry {
 	out := append([]fortigate.Entry(nil), preserved...)
 	next := 1
@@ -222,7 +224,8 @@ func (s recordSet) toEntries(domain string, preserved []fortigate.Entry) []forti
 	return out
 }
 
-// sameEntries はエントリの並びが DNS の内容として同じかどうかを比べる。ID と並び順は見ない。
+// sameEntries reports whether two entry lists have the same DNS content.
+// IDs and order are ignored.
 func sameEntries(a, b []fortigate.Entry) bool {
 	if len(a) != len(b) {
 		return false
