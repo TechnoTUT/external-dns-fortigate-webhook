@@ -1,5 +1,5 @@
-// external-dns-fortigate-webhook は、ExternalDNS のレコードを FortiGate の DNS データベース
-// (config system dns-database) に書く webhook provider。
+// external-dns-fortigate-webhook is an ExternalDNS webhook provider that writes records
+// to a FortiGate DNS database (config system dns-database).
 package main
 
 import (
@@ -38,7 +38,7 @@ func envBool(name string) (bool, error) {
 	v := env(name, "false")
 	b, err := strconv.ParseBool(v)
 	if err != nil {
-		return false, fmt.Errorf("%s: %q は真偽値ではない", name, v)
+		return false, fmt.Errorf("%s: %q is not a boolean", name, v)
 	}
 	return b, nil
 }
@@ -86,7 +86,7 @@ func run() error {
 	}
 	zone := env("FORTIGATE_ZONE", "")
 	if zone == "" {
-		return errors.New("FORTIGATE_ZONE がない")
+		return errors.New("FORTIGATE_ZONE is not set")
 	}
 
 	client, err := fortigate.New(fortigate.Config{
@@ -101,7 +101,7 @@ func run() error {
 		return err
 	}
 	if insecure {
-		log.Warn("FortiGate の証明書を検証しない (FORTIGATE_INSECURE_SKIP_VERIFY)")
+		log.Warn("not verifying the FortiGate certificate (FORTIGATE_INSECURE_SKIP_VERIFY)")
 	}
 
 	p := provider.New(client, provider.Config{
@@ -119,19 +119,19 @@ func run() error {
 	errc := make(chan error, 2)
 	for _, s := range []*http.Server{api, health} {
 		go func() {
-			log.Info("待ち受ける", "addr", s.Addr)
+			log.Info("listening", "addr", s.Addr)
 			if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errc <- err
 			}
 		}()
 	}
 
-	// FortiGate に届くまで待つ。届くまでは /readyz と Negotiate が 503 を返す。
+	// Wait until the FortiGate is reachable. Until then /readyz and Negotiate return 503.
 	for backoff := time.Second; ; backoff = min(backoff*2, 30*time.Second) {
 		if err := p.Init(ctx); err == nil {
 			break
 		} else {
-			log.Error("FortiGate のゾーンを読めない。やり直す", "err", err, "after", backoff.String())
+			log.Error("cannot read zones from the FortiGate, retrying", "err", err, "after", backoff.String())
 		}
 		select {
 		case <-ctx.Done():
@@ -153,7 +153,7 @@ func run() error {
 			return err
 		case <-tick.C:
 			if err := p.SyncReverse(ctx); err != nil {
-				log.Error("逆引きのゾーンを直せない", "err", err)
+				log.Error("cannot repair reverse zones", "err", err)
 			}
 		}
 	}

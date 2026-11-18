@@ -1,15 +1,15 @@
-// Package endpoint は ExternalDNS の webhook API (version=1) でやりとりする型。
-// sigs.k8s.io/external-dns の endpoint.Endpoint と plan.Changes の JSON に合わせる。
-// external-dns 本体のモジュールは依存が大きいので取り込まない。
+// Package endpoint defines the types exchanged over the ExternalDNS webhook API (version 1).
+// They match the JSON of endpoint.Endpoint and plan.Changes in sigs.k8s.io/external-dns.
+// The external-dns module itself is not imported because of its large dependency tree.
 package endpoint
 
-// ProviderSpecificProperty は provider 固有の設定。この webhook では使わない。
+// ProviderSpecificProperty is a provider-specific setting. This webhook does not use any.
 type ProviderSpecificProperty struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
 }
 
-// Endpoint は 1 つの名前と種類のレコード。
+// Endpoint is a record set for one name and type.
 type Endpoint struct {
 	DNSName          string                     `json:"dnsName,omitempty"`
 	Targets          []string                   `json:"targets,omitempty"`
@@ -20,8 +20,9 @@ type Endpoint struct {
 	ProviderSpecific []ProviderSpecificProperty `json:"providerSpecific,omitempty"`
 }
 
-// Changes は ApplyChanges で受け取る変更。
-// external-dns の版によってフィールド名の大文字小文字が違うが、encoding/json は大文字小文字を区別しないで対応付ける。
+// Changes is the change set received by ApplyChanges.
+// The case of the field names differs between external-dns versions, but encoding/json
+// matches field names case-insensitively.
 type Changes struct {
 	Create    []*Endpoint `json:"create,omitempty"`
 	UpdateOld []*Endpoint `json:"updateOld,omitempty"`
@@ -29,7 +30,7 @@ type Changes struct {
 	Delete    []*Endpoint `json:"delete,omitempty"`
 }
 
-// DomainFilter は Negotiate で返す、扱うドメイン。
+// DomainFilter is returned by Negotiate and lists the domains the webhook handles.
 type DomainFilter struct {
 	Include []string `json:"include,omitempty"`
 	Exclude []string `json:"exclude,omitempty"`

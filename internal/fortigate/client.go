@@ -1,4 +1,4 @@
-// Package fortigate は FortiOS の REST API (cmdb/system/dns-database) を扱う。
+// Package fortigate is a client for the FortiOS REST API (cmdb/system/dns-database).
 package fortigate
 
 import (
@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// Entry は dns-database の dns-entry の 1 行。
-// FortiOS 6.2 以降のフィールド名 (CLI の set の名前) に合わせる。
+// Entry is one row of the dns-entry table of a dns-database zone.
+// Field names follow the CLI "set" names of FortiOS 6.2 and later.
 type Entry struct {
 	ID            int    `json:"id"`
 	Status        string `json:"status,omitempty"`
@@ -30,52 +30,52 @@ type Entry struct {
 	CanonicalName string `json:"canonical-name,omitempty"`
 }
 
-// Zone は dns-database の 1 つのゾーン。使うフィールドだけ持つ。
+// Zone is a dns-database zone. Only the fields used here are kept.
 type Zone struct {
 	Name    string  `json:"name"`
 	Domain  string  `json:"domain"`
 	Entries []Entry `json:"dns-entry"`
 }
 
-// Config は Client の設定。
+// Config configures a Client.
 type Config struct {
-	BaseURL            string // 例: https://192.168.99.129
-	Token              string // REST API 管理者 (config system api-user) の API キー
-	VDOM               string // 空なら指定しない
-	TokenInQuery       bool   // true なら access_token のクエリで渡す (Authorization ヘッダを受け付けない版向け)
-	CAFile             string // FortiGate の証明書を検証する CA (PEM)
+	BaseURL            string // for example https://192.168.99.129
+	Token              string // API key of the REST API administrator (config system api-user)
+	VDOM               string // omitted from requests when empty
+	TokenInQuery       bool   // send the key as the access_token query parameter (for versions that reject the Authorization header)
+	CAFile             string // CA bundle (PEM) used to verify the FortiGate certificate
 	InsecureSkipVerify bool
 	Timeout            time.Duration
 }
 
-// Client は FortiOS の REST API のクライアント。
+// Client is a FortiOS REST API client.
 type Client struct {
 	cfg  Config
 	base *url.URL
 	http *http.Client
 }
 
-// New は Client を作る。
+// New creates a Client.
 func New(cfg Config) (*Client, error) {
 	base, err := url.Parse(strings.TrimRight(cfg.BaseURL, "/"))
 	if err != nil {
-		return nil, fmt.Errorf("FortiGate の URL が不正: %w", err)
+		return nil, fmt.Errorf("invalid FortiGate URL: %w", err)
 	}
 	if base.Scheme == "" || base.Host == "" {
-		return nil, fmt.Errorf("FortiGate の URL が不正: %q", cfg.BaseURL)
+		return nil, fmt.Errorf("invalid FortiGate URL: %q", cfg.BaseURL)
 	}
 	if cfg.Token == "" {
-		return nil, fmt.Errorf("FortiGate の API キーがない")
+		return nil, fmt.Errorf("FortiGate API key is not set")
 	}
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.InsecureSkipVerify} //nolint:gosec // 明示的に指定したときだけ
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.InsecureSkipVerify} //nolint:gosec // only when explicitly requested
 	if cfg.CAFile != "" {
 		pem, err := os.ReadFile(cfg.CAFile)
 		if err != nil {
-			return nil, fmt.Errorf("CA を読めない: %w", err)
+			return nil, fmt.Errorf("cannot read CA file: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("CA に証明書がない: %s", cfg.CAFile)
+			return nil, fmt.Errorf("no certificates in CA file: %s", cfg.CAFile)
 		}
 		tlsCfg.RootCAs = pool
 	}
@@ -133,7 +133,7 @@ func (c *Client) do(ctx context.Context, method, name string, body any) (*respon
 	}
 	res, err := c.http.Do(req)
 	if err != nil {
-		// URL に access_token が入ることがあるので、url.Error の URL は出さない。
+		// The URL may contain access_token, so do not include the url.Error URL.
 		if ue, ok := err.(*url.Error); ok {
 			return nil, fmt.Errorf("%s dns-database/%s: %w", method, name, ue.Err)
 		}
@@ -147,7 +147,7 @@ func (c *Client) do(ctx context.Context, method, name string, body any) (*respon
 	var r response
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &r); err != nil && res.StatusCode < 300 {
-			return nil, fmt.Errorf("%s dns-database/%s: 応答を解釈できない: %w", method, name, err)
+			return nil, fmt.Errorf("%s dns-database/%s: cannot parse response: %w", method, name, err)
 		}
 	}
 	if res.StatusCode >= 300 || (r.Status != "" && r.Status != "success") {
@@ -163,7 +163,7 @@ func (c *Client) do(ctx context.Context, method, name string, body any) (*respon
 	return &r, nil
 }
 
-// APIError は FortiGate が失敗を返したときのエラー。
+// APIError is returned when the FortiGate reports a failure.
 type APIError struct {
 	Method     string
 	Zone       string
@@ -176,7 +176,7 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s dns-database/%s: HTTP %d (error %d): %s", e.Method, e.Zone, e.StatusCode, e.Code, e.Message)
 }
 
-// GetZone はゾーンを読む。
+// GetZone reads a zone.
 func (c *Client) GetZone(ctx context.Context, name string) (*Zone, error) {
 	r, err := c.do(ctx, http.MethodGet, name, nil)
 	if err != nil {
@@ -184,15 +184,15 @@ func (c *Client) GetZone(ctx context.Context, name string) (*Zone, error) {
 	}
 	var zones []Zone
 	if err := json.Unmarshal(r.Results, &zones); err != nil {
-		// 単一の mkey を指定したときにオブジェクトで返す版にも対応する。
+		// Some versions return an object instead of an array when a single mkey is requested.
 		var z Zone
 		if err2 := json.Unmarshal(r.Results, &z); err2 != nil {
-			return nil, fmt.Errorf("GET dns-database/%s: results を解釈できない: %w", name, err)
+			return nil, fmt.Errorf("GET dns-database/%s: cannot parse results: %w", name, err)
 		}
 		zones = []Zone{z}
 	}
 	if len(zones) != 1 {
-		return nil, fmt.Errorf("GET dns-database/%s: ゾーンが %d 個返った", name, len(zones))
+		return nil, fmt.Errorf("GET dns-database/%s: got %d zones", name, len(zones))
 	}
 	z := zones[0]
 	if z.Domain == "" {
@@ -201,7 +201,8 @@ func (c *Client) GetZone(ctx context.Context, name string) (*Zone, error) {
 	return &z, nil
 }
 
-// PutEntries はゾーンの dns-entry 全体を entries で置き換える。ゾーンの他の設定は変えない。
+// PutEntries replaces the whole dns-entry table of a zone with entries.
+// Other settings of the zone are left unchanged.
 func (c *Client) PutEntries(ctx context.Context, name string, entries []Entry) error {
 	if entries == nil {
 		entries = []Entry{}

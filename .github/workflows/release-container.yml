@@ -1,8 +1,9 @@
 name: Build and push the container image
 
-# main と v* のタグで ghcr.io にイメージを push する。
-# クラスタ内のレジストリには置かない。DNS の webhook がクラスタ内のレジストリの名前解決に
-# 依存しないようにするため (レジストリが空になったときに、イメージを作り直せなくなる)。
+# Push the image to ghcr.io on main and v* tags.
+# The image is not stored in the in-cluster registry, so that the DNS webhook does not
+# depend on name resolution for that registry (otherwise an empty registry could not be
+# rebuilt).
 on:
   workflow_dispatch:
   push:

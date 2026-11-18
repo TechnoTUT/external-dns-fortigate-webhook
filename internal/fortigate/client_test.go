@@ -64,7 +64,7 @@ func TestTokenInQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	if z.Domain != "z" {
-		t.Fatalf("domain が名前で補われない: %+v", z)
+		t.Fatalf("domain not filled from name: %+v", z)
 	}
 }
 
@@ -81,6 +81,6 @@ func TestAPIError(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	if strings.Contains(err.Error(), "secret") {
-		t.Fatal("エラーにトークンが入っている")
+		t.Fatal("error message contains the token")
 	}
 }

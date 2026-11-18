@@ -32,7 +32,7 @@ func TestAPI(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("準備前の negotiate: %d", rec.Code)
+		t.Fatalf("negotiate before ready: %d", rec.Code)
 	}
 	s.SetReady(true)
 
@@ -48,7 +48,7 @@ func TestAPI(t *testing.T) {
 		t.Fatalf("records: %s", rec.Body.String())
 	}
 
-	// external-dns の古い版は Create のように大文字で始まるフィールド名で送る。
+	// Older external-dns versions send capitalized field names such as "Create".
 	body := `{"Create":[{"dnsName":"b.svc.technotut.net","recordType":"A","targets":["10.0.0.2"]}],"updateNew":[],"Delete":null}`
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/records", strings.NewReader(body)))
