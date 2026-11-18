@@ -96,9 +96,14 @@ func TestApplyChanges(t *testing.T) {
 	if fwd[0].Type != "NS" || fwd[0].ID != 1 || fwd[1].ID != 2 || fwd[1].Hostname != "cam1" {
 		t.Fatalf("forward entries: %+v", fwd)
 	}
+	for _, e := range fwd {
+		if e.Type == "CNAME" && e.CanonicalName != "cam1.svc.technotut.net." {
+			t.Fatalf("CNAME must be written as an FQDN with a trailing dot: %+v", e)
+		}
+	}
 	// Reverse: only cam1 (in 10.12.0.0/16) becomes a PTR, the stale PTR is removed and NS is kept.
 	rev := f.zones["rev10.12"].Entries
-	if len(rev) != 2 || rev[0].Type != "NS" || rev[1].Type != "PTR" || rev[1].IP != "10.12.0.5" || rev[1].Hostname != "cam1.svc.technotut.net" {
+	if len(rev) != 2 || rev[0].Type != "NS" || rev[1].Type != "PTR" || rev[1].IP != "10.12.0.5" || rev[1].Hostname != "cam1.svc.technotut.net." {
 		t.Fatalf("reverse entries: %+v", rev)
 	}
 

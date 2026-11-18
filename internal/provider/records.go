@@ -215,7 +215,8 @@ func (s recordSet) toEntries(domain string, preserved []fortigate.Entry) []forti
 			case "AAAA":
 				e.IPv6 = t
 			case "CNAME":
-				e.CanonicalName = t
+				// FortiOS appends the zone to a name without a trailing dot, so write an FQDN.
+				e.CanonicalName = t + "."
 			}
 			out = append(out, e)
 			next++
