@@ -1,50 +1,50 @@
 # external-dns-fortigate-webhook
 
-[ExternalDNS](https://github.com/kubernetes-sigs/external-dns) の webhook provider です。Kubernetes の Service や Ingress、DNSEndpoint のレコードを、FortiGate の DNS データベース (`config system dns-database`) に REST API で書き込みます。
+A webhook provider for [ExternalDNS](https://github.com/kubernetes-sigs/external-dns). It writes records from Kubernetes Services, Ingresses and DNSEndpoints to a FortiGate DNS database (`config system dns-database`) through the FortiOS REST API.
 
-TechnoTUT のクラスタ ([TechnoTUT/Infra](https://github.com/TechnoTUT/Infra)) で、`svc.technotut.net` のレコードを FortiGate から直接返すために使います。
+TechnoTUT uses it in the cluster defined in [TechnoTUT/Infra](https://github.com/TechnoTUT/Infra) so that the FortiGate answers for `svc.technotut.net` directly.
 
-## 仕組み
+## How it works
 
-- ExternalDNS の Pod のサイドカーとして動きます。ExternalDNS は `127.0.0.1:8888` の webhook API (version=1) を呼びます。
-- 扱うレコードの種類は、正引きのゾーンでは A、AAAA、CNAME です。逆引きのゾーンでは PTR と PTR_V6 です。
-- 変更を受け取ると、FortiGate からゾーンを読みます。そこに変更を当て、ゾーンの `dns-entry` 全体を PUT で置き換えます。内容が変わらないときは書き込みません。FortiGate の設定の保存とリビジョンが増えるのは、レコードが実際に変わったときだけです。
-- 逆引きのゾーンを指定すると、正引きの A と AAAA から PTR を作ります。ExternalDNS の `--create-ptr` は使いません。逆引きは変更のたびに作り直し、`REVERSE_RESYNC_INTERVAL` ごとにも作り直します。
-- 依存は Go の標準ライブラリだけです。
+- It runs as a sidecar in the ExternalDNS pod. ExternalDNS calls the webhook API (version 1) on `127.0.0.1:8888`.
+- Supported record types: A, AAAA and CNAME in the forward zone, and PTR and PTR_V6 in reverse zones.
+- On each change set it reads the zone from the FortiGate, applies the changes and replaces the whole `dns-entry` table of the zone with a single PUT. Nothing is written when the result is unchanged, so the FortiGate only saves its configuration (and adds a config revision) when records actually change.
+- When reverse zones are configured, PTR records are derived from the A and AAAA records of the forward zone. The ExternalDNS `--create-ptr` flag is not used. Reverse zones are rebuilt after every change and every `REVERSE_RESYNC_INTERVAL`.
+- The only dependency is the Go standard library.
 
-### ゾーンは webhook 専用にする
+### The zones are dedicated to the webhook
 
-FortiGate の `dns-entry` には TXT が置けません。そのため ExternalDNS の TXT registry (レコードの所有者の記録) が使えません。この webhook は次のように扱います。
+A FortiGate `dns-entry` cannot hold TXT records, so the ExternalDNS TXT registry, which records who owns each record, cannot be used. The webhook therefore works like this:
 
-- 正引きのゾーンの A、AAAA、CNAME と、逆引きのゾーンの PTR は、すべて webhook のものとして扱います。
-- ExternalDNS は `--registry=noop` で動かします。`policy: sync` なので、Kubernetes 側にないレコードは消えます。
-- 手で書きたい固定のレコードは、FortiGate に直接書かないでください。Kubernetes の `DNSEndpoint` として書きます。
-- 次のエントリには触りません。ゾーンの頂点 (`@`)、NS や MX などの他の種類、`status disable` のエントリです。
+- Every A, AAAA and CNAME entry in the forward zone and every PTR entry in a reverse zone belongs to the webhook.
+- ExternalDNS runs with `--registry=noop`. With `policy: sync`, any record that does not exist in Kubernetes is deleted.
+- Do not add static records on the FortiGate by hand. Define them in Kubernetes as `DNSEndpoint` resources instead.
+- The webhook never touches the zone apex (`@`), other record types such as NS or MX, or entries with `status disable`.
 
-## 設定 (環境変数)
+## Configuration (environment variables)
 
-| 変数 | 既定 | 内容 |
+| Variable | Default | Description |
 |---|---|---|
-| `FORTIGATE_URL` | (必須) | 例: `https://192.168.99.129` |
-| `FORTIGATE_TOKEN` | | REST API 管理者の API キー |
-| `FORTIGATE_TOKEN_FILE` | | API キーをファイルから読む。`FORTIGATE_TOKEN` より優先します |
-| `FORTIGATE_TOKEN_IN_QUERY` | `false` | `true` なら、`Authorization: Bearer` ヘッダの代わりにクエリ `access_token` でキーを渡します。ヘッダを受け付けない古い FortiOS 向けです |
+| `FORTIGATE_URL` | (required) | For example `https://192.168.99.129` |
+| `FORTIGATE_TOKEN` | | API key of the REST API administrator |
+| `FORTIGATE_TOKEN_FILE` | | Read the API key from a file. Takes precedence over `FORTIGATE_TOKEN` |
+| `FORTIGATE_TOKEN_IN_QUERY` | `false` | Send the key as the `access_token` query parameter instead of an `Authorization: Bearer` header, for older FortiOS versions that do not accept the header |
 | `FORTIGATE_VDOM` | `root` | |
-| `FORTIGATE_ZONE` | (必須) | 正引きのゾーンの `dns-database` の名前。ドメインはゾーンの `domain` から読みます |
-| `FORTIGATE_REVERSE_ZONES` | | 逆引きのゾーンの `dns-database` の名前 (カンマ区切り)。ゾーンの `domain` は `12.10.in-addr.arpa` のような、オクテット (IPv6 はニブル) で区切った形にします |
-| `FORTIGATE_CA_FILE` | | FortiGate の証明書を検証する CA (PEM) |
-| `FORTIGATE_INSECURE_SKIP_VERIFY` | `false` | 証明書を検証しません (自己署名の証明書のとき) |
-| `DRY_RUN` | `false` | FortiGate に書かず、書く内容をログに出します |
-| `REVERSE_RESYNC_INTERVAL` | `5m` | 逆引きのゾーンを作り直す間隔 |
-| `WEBHOOK_ADDR` | `127.0.0.1:8888` | webhook API |
-| `HEALTH_ADDR` | `:8080` | `/healthz`、`/readyz` |
-| `LOG_LEVEL` | `info` | `debug`、`info`、`warn`、`error` |
+| `FORTIGATE_ZONE` | (required) | Name of the forward zone in `dns-database`. The domain is read from the zone's `domain` field |
+| `FORTIGATE_REVERSE_ZONES` | | Comma-separated names of reverse zones in `dns-database`. Their `domain` must be split on octet boundaries (nibble boundaries for IPv6), such as `12.10.in-addr.arpa` |
+| `FORTIGATE_CA_FILE` | | CA bundle (PEM) used to verify the FortiGate certificate |
+| `FORTIGATE_INSECURE_SKIP_VERIFY` | `false` | Skip certificate verification, for a self-signed certificate |
+| `DRY_RUN` | `false` | Log the entries that would be written instead of writing them |
+| `REVERSE_RESYNC_INTERVAL` | `5m` | How often reverse zones are rebuilt |
+| `WEBHOOK_ADDR` | `127.0.0.1:8888` | Webhook API listen address |
+| `HEALTH_ADDR` | `:8080` | `/healthz` and `/readyz` listen address |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 
-`/readyz` は、起動してから FortiGate のゾーンを読めるまで 503 を返します。
+`/readyz` returns 503 until the webhook has read the zones from the FortiGate after startup.
 
-## FortiGate の設定
+## FortiGate setup
 
-1. REST API 管理者のプロファイルを作ります。`dns-database` はシステムの設定 (`sysgrp`) に含まれます。
+1. Create an admin profile for the REST API administrator. `dns-database` is part of the system configuration group (`sysgrp`).
 
    ```
    config system accprofile
@@ -57,7 +57,7 @@ FortiGate の `dns-entry` には TXT が置けません。そのため ExternalD
    end
    ```
 
-2. REST API 管理者を作って、API キーを発行します。接続元は Pod の通信を NAT したあとの IP (ノードの IP) に絞ります。
+2. Create the REST API administrator and generate an API key. Restrict the trusted hosts to the addresses that pod traffic has after NAT, which are the node addresses.
 
    ```
    config system api-user
@@ -74,9 +74,9 @@ FortiGate の `dns-entry` には TXT が置けません。そのため ExternalD
    execute api-user generate-key externaldns
    ```
 
-3. Pod から届くインターフェースで HTTPS の管理アクセスを許可します (例: `dmz` の `allowaccess` に `https` を足す)。
+3. Allow HTTPS administrative access on the interface the pods reach the FortiGate through (for example, add `https` to `allowaccess` on `dmz`).
 
-4. ゾーンを用意します。逆引きを使う場合は逆引きのゾーンも作ります。
+4. Create the zones. Create the reverse zones as well if you want PTR records.
 
    ```
    config system dns-database
@@ -97,9 +97,9 @@ FortiGate の `dns-entry` には TXT が置けません。そのため ExternalD
    end
    ```
 
-5. クライアントや CoreDNS が問い合わせるインターフェースの `config system dns-server` を `recursive` か `non-recursive` にします。`forward-only` だと、ローカルの DNS データベースを参照しません。
+5. Set `config system dns-server` to `recursive` or `non-recursive` on every interface that clients or CoreDNS query. In `forward-only` mode the FortiGate ignores its local DNS database.
 
-## ExternalDNS の設定 (Helm chart)
+## ExternalDNS setup (Helm chart)
 
 ```yaml
 provider:
@@ -127,21 +127,21 @@ registry: noop
 managedRecordTypes: [A, AAAA, CNAME]
 ```
 
-初めて動かすときは `DRY_RUN=true` にします。ログで書き込む内容を確かめてから外してください。
+For the first run, set `DRY_RUN=true`. Check in the logs what would be written, then remove it.
 
-## 実機で確かめること (FortiOS 6.2)
+## Not yet verified on FortiOS 6.2
 
-テストは偽の FortiGate を相手にしています。FortiGate-100D (FortiOS 6.2.16) の実機では、次のことをまだ確かめていません。
+The tests run against a fake FortiGate. The following points have not been checked on the real FortiGate-100D (FortiOS 6.2.16):
 
-- `Authorization: Bearer` ヘッダで認証できるか。できなければ `FORTIGATE_TOKEN_IN_QUERY=true` にします。
-- PUT で `dns-entry` を渡すと、表全体が置き換わるか。
-- CNAME の `canonical-name` と PTR の `hostname` は、末尾にドットを付けない FQDN で書いています。この形で正しく応答するか。
+- Whether authentication with the `Authorization: Bearer` header works. If it does not, set `FORTIGATE_TOKEN_IN_QUERY=true`.
+- Whether a PUT that includes `dns-entry` replaces the whole table.
+- CNAME `canonical-name` and PTR `hostname` values are written as FQDNs without a trailing dot. Whether the FortiGate answers correctly in that form.
 
-## 開発
+## Development
 
 ```sh
 go test ./...
 podman build -t external-dns-fortigate-webhook -f Containerfile .
 ```
 
-`main` に push するか `v*` のタグを付けると、GitHub Actions が `ghcr.io/technotut/external-dns-fortigate-webhook` にイメージを push します。クラスタ内のレジストリには置きません。DNS の webhook がクラスタ内のレジストリの名前解決に依存しないようにするためです。
+Pushing to `main` or a `v*` tag makes GitHub Actions push the image to `ghcr.io/technotut/external-dns-fortigate-webhook`. The image is not stored in the in-cluster registry, so that the DNS webhook does not depend on name resolution for that registry.
