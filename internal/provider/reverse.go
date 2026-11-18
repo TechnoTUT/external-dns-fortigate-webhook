@@ -72,7 +72,9 @@ func reverseEntries(fwd recordSet, prefix netip.Prefix, preserved []fortigate.En
 			if err != nil || !prefix.Contains(a) {
 				continue
 			}
-			e := fortigate.Entry{ID: next, Status: "enable", TTL: r.ttl, Hostname: k.name}
+			// FortiOS appends the reverse zone to a hostname without a trailing dot
+			// (cam1.svc.technotut.net.12.10.in-addr.arpa), so write an FQDN.
+			e := fortigate.Entry{ID: next, Status: "enable", TTL: r.ttl, Hostname: k.name + "."}
 			if a.Is4() {
 				e.Type, e.IP = "PTR", a.String()
 			} else {

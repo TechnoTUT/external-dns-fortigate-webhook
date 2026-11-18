@@ -57,7 +57,7 @@ A FortiGate `dns-entry` cannot hold TXT records, so the ExternalDNS TXT registry
    end
    ```
 
-2. Create the REST API administrator and generate an API key. Restrict the trusted hosts to the addresses that pod traffic has after NAT, which are the node addresses.
+2. Create the REST API administrator and generate an API key. Restrict the trusted hosts to the addresses that pod traffic has after NAT, which are the node addresses. FortiOS 7.x asks for the current administrator password when the API user is saved and when the key is generated, and has no `vdom` setting on a FortiGate without VDOMs.
 
    ```
    config system api-user
@@ -129,13 +129,19 @@ managedRecordTypes: [A, AAAA, CNAME]
 
 For the first run, set `DRY_RUN=true`. Check in the logs what would be written, then remove it.
 
-## Not yet verified on FortiOS 6.2
+## Verification status
 
-The tests run against a fake FortiGate. The following points have not been checked on the real FortiGate-100D (FortiOS 6.2.16):
+Checked on FortiFirewall-VM 7.6.8 (FortiOS, unlicensed evaluation VM):
 
-- Whether authentication with the `Authorization: Bearer` header works. If it does not, set `FORTIGATE_TOKEN_IN_QUERY=true`.
+- Authentication with the `Authorization: Bearer` header is accepted.
+- An unlicensed VM blocks every REST API URI (`blocking VM URI` in the httpsd debug log), so the API calls themselves need a licensed VM.
+- PTR `hostname` and CNAME `canonical-name` values without a trailing dot get the zone appended (`cam1.svc.technotut.net.12.10.in-addr.arpa`). The webhook therefore writes them as FQDNs with a trailing dot.
+- With `authoritative enable` (the default), names that are not in the zone get NXDOMAIN and the zone `forwarder` is not used. With `authoritative disable`, they are sent to the forwarder.
+
+Not yet checked:
+
 - Whether a PUT that includes `dns-entry` replaces the whole table.
-- CNAME `canonical-name` and PTR `hostname` values are written as FQDNs without a trailing dot. Whether the FortiGate answers correctly in that form.
+- Behavior on FortiOS 6.2 (the production FortiGate-100D runs 6.2.16).
 
 ## Development
 
